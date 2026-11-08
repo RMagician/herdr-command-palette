@@ -28,11 +28,18 @@ def terminal_width(default: int = 100) -> int:
         return default
 
 
+WINDOWS = sys.platform == "win32"
+
+
 def which(name: str) -> str | None:
+    # Windows executables carry an extension (fzf.exe); a bare `fzf` there is
+    # never runnable, so only PATHEXT suffixes count, as in shutil.which.
+    exts = os.environ.get("PATHEXT", ".EXE").lower().split(";") if WINDOWS else [""]
     for directory in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = os.path.join(directory, name)
-        if os.access(candidate, os.X_OK) and not os.path.isdir(candidate):
-            return candidate
+        for ext in exts:
+            candidate = os.path.join(directory, name + ext)
+            if os.access(candidate, os.X_OK) and not os.path.isdir(candidate):
+                return candidate
     return None
 
 
@@ -56,7 +63,11 @@ def trace(label: str) -> None:
         pass
 
 
-CONFIG = os.path.expanduser("~/.config/herdr/config.toml")
+CONFIG = (
+    os.path.join(os.environ.get("APPDATA", ""), "herdr", "config.toml")
+    if WINDOWS
+    else os.path.expanduser("~/.config/herdr/config.toml")
+)
 
 RESET = "\x1b[0m"
 # Defaults; overridden in main() from [theme.custom] when available.
@@ -551,7 +562,7 @@ def run_fzf(
     env = {**os.environ, "FZF_DEFAULT_OPTS": "", "FZF_DEFAULT_OPTS_FILE": ""}
     # Herdr gives the plugin a state dir; using it (rather than tempfile) keeps
     # one more module out of startup, and the pid keeps concurrent popups apart.
-    state = os.environ.get("HERDR_PLUGIN_STATE_DIR") or "/tmp"
+    state = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.environ.get("TEMP") or "/tmp"
     cache_path = os.path.join(state, f"specs-{os.getpid()}.json") if specs else None
     if cache_path:
         with open(cache_path, "w", encoding="utf-8") as fh:
@@ -564,7 +575,15 @@ def run_fzf(
         # and re-resolving `env python3` through PATH each time is pure waste.
         # -S -E for the same reason the trampoline uses them: this respawns the
         # interpreter on every keystroke, so its startup is the typing latency.
-        script = f"{shlex.quote(sys.executable)} -S -E {shlex.quote(os.path.abspath(__file__))}"
+        if WINDOWS:
+            # fzf runs binds through cmd.exe here; -X utf8 because the rows
+            # carry glyphs the default cp1252 console encoding cannot write.
+            script = subprocess.list2cmdline(
+                [sys.executable, "-X", "utf8", "-S", "-E", os.path.abspath(__file__)]
+            )
+            env.pop("SHELL", None)  # a stray POSIX $SHELL would make fzf skip cmd.exe
+        else:
+            script = f"{shlex.quote(sys.executable)} -S -E {shlex.quote(os.path.abspath(__file__))}"
         # When the invoking pane is a live agent, pre-select its row so the
         # palette opens on "you are here" rather than always the top.
         initial_pos = 3
@@ -577,17 +596,27 @@ def run_fzf(
         # land on at most two separators; a third check on the way up steps
         # back down when the first group's heading sits at the very top.
         def on_sep(then: str) -> str:
+            if WINDOWS:
+                # [] delimiters: cmd needs no parens here, and fzf quotes {1} as ^"..^"
+                return f'+transform[if {{1}}==^"{SEPARATOR}^" echo {then}]'
             return f"+transform([ {{1}} = {SEPARATOR} ] && echo {then} || true)"
 
         down = "down" + on_sep("down") * 2
         up = "up" + on_sep("up") * 2 + on_sep("down+down")
+        # `result` fires after every reload. Only the unfiltered list opens
+        # on the caller's agent row: once the user types, its old index
+        # points at an unrelated row, so focus the first match instead.
+        if WINDOWS:
+            # FZF_QUERY, not {q}: a quoted query with spaces would split cmd's `if`.
+            on_result = (
+                f"if defined FZF_QUERY (echo pos^(3^)) else (echo pos^({initial_pos}^))"
+            )
+        else:
+            on_result = f"[ -z {{q}} ] && echo 'pos({initial_pos})' || echo 'pos(3)'"
         swap = [
             "--disabled",
             f"--bind=change:reload({script} --rows {{q}})",
-            # `result` fires after every reload. Only the unfiltered list opens
-            # on the caller's agent row: once the user types, its old index
-            # points at an unrelated row, so focus the first match instead.
-            f"--bind=result:transform:[ -z {{q}} ] && echo 'pos({initial_pos})' || echo 'pos(3)'",
+            f"--bind=result:transform:{on_result}",
             f"--bind=down,ctrl-j,ctrl-n:{down}",
             f"--bind=up,ctrl-k,ctrl-p:{up}",
         ]
