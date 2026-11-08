@@ -290,7 +290,8 @@ def load_context() -> Context:
         # Three launch paths, three shapes: custom keybindings export
         # HERDR_ACTIVE_*, plugin actions export the shorter HERDR_* names, and a
         # plugin pane gets HERDR_PLUGIN_CONTEXT_JSON instead of either.
-        pane_id=env("HERDR_ACTIVE_PANE_ID") or env("HERDR_PANE_ID") or plugin.get("pane_id"),
+        pane_id=env("HERDR_ACTIVE_PANE_ID") or env("HERDR_PANE_ID") or plugin.get("pane_id")
+        or plugin.get("focused_pane_id"),
         tab_id=env("HERDR_ACTIVE_TAB_ID") or env("HERDR_TAB_ID") or plugin.get("tab_id"),
         workspace_id=env("HERDR_ACTIVE_WORKSPACE_ID") or env("HERDR_WORKSPACE_ID")
         or plugin.get("workspace_id"),
